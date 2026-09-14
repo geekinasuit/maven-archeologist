@@ -33,21 +33,37 @@ LIBRARY_METADATA = metadata(
 JAVA_LANGUAGE_LEVEL = "1.8"
 KOTLIN_LANGUAGE_LEVEL = "1.5"
 
-# What version of kotlin are we using
-KOTLIN_VERSION = "1.5.32"
-KOTLINC_RELEASE_SHA = "2e728c43ee0bf819eae06630a4cbbc28ba2ed5b19a55ee0af96d2c0ab6b6c2a5"
+# What version of kotlin are we using. kotlin_repositories() uses the rules' default kotlinc
+# (1.9.23 for rules_kotlin v1.9.6), so no explicit compiler pin is needed; this constant drives
+# the kotlin-stdlib/kotlin-reflect maven coordinates below, which must match the compiler.
+KOTLIN_VERSION = "1.9.23"
 
 # what version of the kotlin rules are we using
-KOTLIN_RULES_VERSION = "v1.6.0-RC-2"
+# ARCH-002: bumped v1.6.0-RC-2 -> v1.9.6 (last 1.x; WORKSPACE mode on Bazel 7.7.1, mirrors the
+# bazel_maven_repository fork). Release asset name changed to rules_kotlin-<version>.tar.gz.
+KOTLIN_RULES_VERSION = "v1.9.6"
 KOTLIN_RULES_FORK = "bazelbuild"
-KOTLIN_RULES_SHA = "88d19c92a1fb63fb64ddb278cd867349c3b0d648b6fe9ef9a200b9abcacd489d"
-KOTLIN_RULES_URL = "https://github.com/{fork}/rules_kotlin/releases/download/{version}/rules_kotlin_release.tgz".format(
+KOTLIN_RULES_SHA = "3b772976fec7bdcda1d84b9d39b176589424c047eb2175bed09aac630e50af43"
+KOTLIN_RULES_URL = "https://github.com/{fork}/rules_kotlin/releases/download/{version}/rules_kotlin-{version}.tar.gz".format(
     fork = KOTLIN_RULES_FORK,
     version = KOTLIN_RULES_VERSION,
 )
 
-MAVEN_REPOSITORY_RULES_VERSION = "2.0.0-alpha-5"
-MAVEN_REPOSITORY_RULES_SHA = "fde80cafa02a2c034cc8086c158f500e7b6ceb16d251273a6cc82f1c0723e0e8"
+# ARCH-002: rules_java pinned ahead of rules_kotlin. rules_kotlin 1.9.6's kotlin_repositories()
+# otherwise pulls a rules_java too old for Bazel 7.7.1's test infra (lcov_merger loads
+# @rules_java//java:java_binary.bzl). See WORKSPACE for the load ordering that makes this win.
+RULES_JAVA_VERSION = "7.6.5"
+RULES_JAVA_SHA = "8afd053dd2a7b85a4f033584f30a7f1666c5492c56c76e04eec4428bdb2a86cf"
+RULES_JAVA_URL = "https://github.com/bazelbuild/rules_java/releases/download/{version}/rules_java-{version}.tar.gz".format(
+    version = RULES_JAVA_VERSION,
+)
+
+# ARCH-002: repointed from square's 2.0.0-alpha-5 (fails on Bazel 7: "invalid user-provided repo
+# name ''") to the geekinasuit fork, which was modernized onto Bazel 7.7.1. No tagged release
+# exists yet, so pinned by commit SHA on the fork's master branch.
+MAVEN_REPOSITORY_RULES_FORK = "geekinasuit"
+MAVEN_REPOSITORY_RULES_VERSION = "1b8716aa5184950a6cb067baaf566f6f4f621850"
+MAVEN_REPOSITORY_RULES_SHA = "4cb32bf4819ae3d60d71800682ccda8ccde00bfc0dd63756cb4b960853da5541"
 
 MAVEN_LIBRARY_VERSION = "3.6.3"
 

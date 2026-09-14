@@ -14,30 +14,43 @@ workspace(name = "maven_archeologist")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 load(
     "//:versions.bzl",
-    "KOTLINC_RELEASE_SHA",
-    "KOTLIN_VERSION",
     "KOTLIN_RULES_SHA",
     "KOTLIN_RULES_URL",
+    "RULES_JAVA_SHA",
+    "RULES_JAVA_URL",
+    "MAVEN_REPOSITORY_RULES_FORK",
     "MAVEN_REPOSITORY_RULES_SHA",
     "MAVEN_REPOSITORY_RULES_VERSION",
     "maven_artifacts",
 )
 
+# ARCH-002: rules_java pinned AHEAD of rules_kotlin. rules_kotlin 1.9.6's kotlin_repositories()
+# pulls a rules_java too old for Bazel 7.7.1's test infra (@bazel_tools//tools/test:lcov_merger
+# loads @rules_java//java:java_binary.bzl, which the old one lacks). maybe() in
+# kotlin_repositories() is first-wins, so declaring a Bazel-7-compatible rules_java here keeps it.
+http_archive(
+    name = "rules_java",
+    sha256 = RULES_JAVA_SHA,
+    urls = [RULES_JAVA_URL],
+)
+
+load("@rules_java//java:repositories.bzl", "rules_java_dependencies", "rules_java_toolchains")
+
+rules_java_dependencies()
+
+rules_java_toolchains()
+
 # Load the kotlin rules repository, and setup kotlin rules and toolchain.
 http_archive(
-    name = "io_bazel_rules_kotlin",
+    name = "rules_kotlin",
     sha256 = KOTLIN_RULES_SHA,
     urls = [KOTLIN_RULES_URL],
 )
 
-load("@io_bazel_rules_kotlin//kotlin:repositories.bzl", "kotlin_repositories", "kotlinc_version")
+load("@rules_kotlin//kotlin:repositories.bzl", "kotlin_repositories")
 
-kotlin_repositories(
-    compiler_release = kotlinc_version(
-        release = KOTLIN_VERSION, # just the numeric version
-        sha256 = KOTLINC_RELEASE_SHA
-    )
-)
+# No args: use the rules' default kotlinc (1.9.23 for v1.9.6).
+kotlin_repositories()
 
 register_toolchains("//:kotlin_toolchain")
 
@@ -45,7 +58,7 @@ http_archive(
     name = "maven_repository_rules",
     sha256 = MAVEN_REPOSITORY_RULES_SHA,
     strip_prefix = "bazel_maven_repository-%s" % MAVEN_REPOSITORY_RULES_VERSION,
-    urls = ["https://github.com/square/bazel_maven_repository/archive/%s.zip" % MAVEN_REPOSITORY_RULES_VERSION],
+    urls = ["https://github.com/%s/bazel_maven_repository/archive/%s.zip" % (MAVEN_REPOSITORY_RULES_FORK, MAVEN_REPOSITORY_RULES_VERSION)],
 )
 
 load("@maven_repository_rules//maven:maven.bzl", "maven_repository_specification")

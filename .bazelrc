@@ -1,0 +1,8 @@
+# ARCH-002: Bazel 7.x defaults bzlmod on and auto-creates an empty MODULE.bazel. This repo's
+# external deps (rules_kotlin, bazel_maven_repository) are still declared in WORKSPACE, so keep
+# WORKSPACE loading (bzlmod migration is ARCH-005, blocked on bazel_maven_repository).
+common --noenable_bzlmod
+
+# The checked-in JUnit runner calls setSecurityManager, which JDK 18+ refuses; remotejdk_17 warns
+# but permits. Do NOT use --java_language_version=17 (breaks the rules_kotlin builder's jvm_target).
+build --java_runtime_version=remotejdk_17
