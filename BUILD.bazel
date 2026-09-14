@@ -10,7 +10,7 @@
 # or implied. See the License for the specific language governing permissions and limitations under
 # the License.
 load("//:versions.bzl", "JAVA_LANGUAGE_LEVEL", "KOTLIN_LANGUAGE_LEVEL")
-load("@io_bazel_rules_kotlin//kotlin:kotlin.bzl", "define_kt_toolchain")
+load("@rules_kotlin//kotlin:core.bzl", "define_kt_toolchain")
 define_kt_toolchain(
     name = "kotlin_toolchain",
     api_version = KOTLIN_LANGUAGE_LEVEL,
