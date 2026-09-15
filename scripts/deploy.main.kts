@@ -1,4 +1,4 @@
-#!/usr/bin/env kscript
+#!/usr/bin/env kotlin
 
 /*
  * Copyright 2020 Square Inc.
@@ -16,8 +16,34 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-@file:MavenRepository("maven-central", "https://repo1.maven.org/maven2")
+
+/*
+ * Ported from kscript to the kotlin `*.main.kts` scripting form and relocated to scripts/ (ARCH-006).
+ * The pure decision + command-assembly logic lives in scripts/lib/DeployCommand.kts and is unit-tested
+ * by scripts/deploy.test.main.kts. This file keeps only the process orchestration (bazel build, mvn).
+ *
+ * Run from the workspace root:  ./scripts/deploy.main.kts [--key <gpgkey>] [-v]
+ * (or: kotlin scripts/deploy.main.kts ...). Requires `kotlin`, `mvn`, and a local `bazel`/`bazelisk`
+ * on PATH.
+ *
+ * KNOWN LIMITATIONS carried forward from the original (the "better tools later" work under ARCH-006):
+ *   - Sonatype OSS (oss.sonatype.org / OSSRH) is being sunset in favour of the Central Portal. The
+ *     Repo URLs in DeployCommand still point at OSSRH, so a real release needs the endpoint + auth
+ *     flow updated before it will publish to Maven Central.
+ *   - CI detection keys off the Travis envvars (TRAVIS / TRAVIS_BRANCH); CI is GitHub Actions now, so
+ *     the `--travis` snapshot path is effectively dead until rewired.
+ *   - clikt is pinned at 2.6.0 (the original's version); newer geekinasuit scripts use clikt 4.x.
+ *
+ * FIXED relative to the original kscript:
+ *   - The GPG key name (`-Dgpg.keyname=...`) was computed but never appended to the mvn command (a
+ *     missing `+`); it is now always present when --key is supplied (see DeployCommand.buildMvnCommand).
+ *   - A failed/timed-out `mvn` publish used to exit 0; it now logs to stderr and exits non-zero.
+ *   - `branch` is trimmed before comparison, so a trailing newline from `git branch --show-current`
+ *     no longer defeats the `== "main"` check (see DeployCommand.selectRepo).
+ */
+@file:Repository("https://repo1.maven.org/maven2")
 @file:DependsOn("com.github.ajalt:clikt:2.6.0")
+@file:Import("lib/DeployCommand.kts")
 
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.PrintMessage
@@ -44,7 +70,9 @@ class Main : CliktCommand() {
 
   private val bazel = "bazel".which()
 
-  private val version = File("versions.bzl").extractPythonicStringVariable("LIBRARY_VERSION").also {
+  private val version = DeployCommand.extractStringVariable(
+      File("versions.bzl").readText(), "LIBRARY_VERSION"
+  ).also {
     if (it.isEmpty()) {
       System.err.println("Could not extract version from version file.")
       exitProcess(1)
@@ -62,69 +90,69 @@ class Main : CliktCommand() {
       System.err.println("Must run deployment script from the workspace root.")
       exitProcess(1)
     }
-    val repo = if (travis) {
-      if (branch == "main") Repo.SonatypeSnapshots
-      else throw PrintMessage("Aborting deployment on a non-main branch.")
-    } else if (branch.startsWith("release-")) {
-      if (key == null) {
-        throw UsageError("Must supply --key <gpgkey> for release deployments.")
-      } else if (snapshotVersion) {
-        throw UsageError("Don't use a snapshot version ($version) on a release branch ($branch)")
-      } else Repo.SonatypeStaging
-    } else Repo.FakeLocalRepo
+    val repo = when (val decision =
+        DeployCommand.selectRepo(
+            ci = travis,
+            branch = branch,
+            hasKey = key != null,
+            snapshotVersion = snapshotVersion,
+            version = version,
+        )) {
+      is DeployCommand.RepoDecision.Deploy -> decision.repo
+      is DeployCommand.RepoDecision.Abort -> throw PrintMessage(decision.message)
+      is DeployCommand.RepoDecision.Usage -> throw UsageError(decision.message)
+    }
 
-    val mvn_goal = key?.let { "gpg:sign-and-deploy-file" } ?: "deploy:deploy-file"
-    val key_flag = key?.let { " -Dgpg.keyname=$it" } ?: ""
-    val settings_file = if (repo != Repo.FakeLocalRepo) " -gs tools/release/settings.xml" else ""
-    val debug_flag = if (verbose) " --debug" else ""
-    val javadoc_flag = if (!snapshotVersion) " -Djavadoc=$javadoc_file" else ""
-    val mvn_cmd = "mvn $mvn_goal" +
-        settings_file +
-        debug_flag +
-        " -Dfile=$artifact_file" +
-        " -DpomFile=$pom_file" +
-        " -Dsources=$sources_file" +
-        " -DrepositoryId=${repo.id}" +
-        " -Durl=${repo.url}" +
-        javadoc_flag
-        key_flag
+    val mvn_cmd = DeployCommand.buildMvnCommand(
+        repo = repo,
+        artifactFile = artifact_file,
+        pomFile = pom_file,
+        sourcesFile = sources_file,
+        javadocFile = javadoc_file,
+        key = key,
+        verbose = verbose,
+        settingsFile = "tools/release/settings.xml",
+        snapshotVersion = snapshotVersion,
+    )
 
     echo("Deploying version $version to $repo")
-    if (verbose) echo("Executing command: $mvn_cmd")
-    mvn_cmd.cmd(outputRedirect = INHERIT, errorRedirect = INHERIT)
+    if (verbose) echo("Executing command: ${mvn_cmd.joinToString(" ")}")
+    ProcessBuilder(mvn_cmd)
+        .directory(File("."))
+        .redirectOutput(INHERIT)
+        .redirectError(INHERIT)
         .apply {
           with(environment()) {
-            if (repo != Repo.FakeLocalRepo) {
+            if (repo != DeployCommand.Repo.FakeLocalRepo) {
               if (username != null && password != null) {
                 putIfAbsent("CI_DEPLOY_USERNAME", username)
                 putIfAbsent("CI_DEPLOY_PASSWORD", password)
               } else {
                 throw UsageError("Must supply either CI_DEPLOY_USERNAME/CI_DEPLOY_PASSWORD " +
-                    "environment vairables, or override --username/--password to deploy to a " +
+                    "environment variables, or override --username/--password to deploy to a " +
                     "non-fake repo.")
               }
             }
           }
         }
-        .execute(timeout = 300)
+        .execute(
+            timeout = 300,
+            onTimeout = {
+              System.err.println("Deployment timed out after 300s. Command: ${mvn_cmd.joinToString(" ")}")
+              it.destroyForcibly()
+              exitProcess(1)
+            },
+            onError = {
+              System.err.println(
+                  "Deployment failed: mvn exited ${it.exitValue()}. Command: ${mvn_cmd.joinToString(" ")}"
+              )
+              exitProcess(it.exitValue())
+            }
+        )
   }
 }
 
-sealed class Repo(val id: String, val url: String) {
-  object SonatypeSnapshots : Repo(
-      "sonatype-nexus-snapshots",
-      "https://oss.sonatype.org/content/repositories/snapshots"
-  )
-  object SonatypeStaging : Repo(
-      "sonatype-nexus-staging",
-      "https://oss.sonatype.org/service/local/staging/deploy/maven2"
-  )
-  object FakeLocalRepo : Repo(
-      "local-fake",
-      "file:///tmp/fakerepo"
-  )
-}
-
+/** Run a bazel build command and return the first output line ending with [suffix] (the artifact path). */
 fun String.execAndFilterSuffix(suffix: String) =
     cmd()
         .execute()
@@ -139,18 +167,7 @@ fun String.execAndFilterSuffix(suffix: String) =
           }
           proc.stdout + proc.stderr
         }
-        .lines()
-        .first { it.endsWith(suffix) }
-        .trim()
-
-/** A utility method to extact a known version */
-fun File.extractPythonicStringVariable(variable: String) =
-    readText()
-        .lines()
-        .first { it.startsWith(variable) }
-        .substringBefore("#") // ditch comments
-        .substringAfter("=")
-        .trim('"', ' ')
+        .let { DeployCommand.firstLineEndingWith(it, suffix) }
 
 fun Process.wait(timeout: Long = 120, unit: TimeUnit = TimeUnit.SECONDS): Process =
     this.also { it.waitFor(timeout, unit) }
@@ -193,14 +210,14 @@ fun ProcessBuilder.execute(
 }
 
 /**
- * Wraps the unix `which` comamnd, returning the first path entry for the given command, or null.
+ * Wraps the unix `which` command, returning the first path entry for the given command.
  */
 fun String.which() = "which $this"
     .execute()
     .stdout
     .trim()
     .also {
-      if (it.isEmpty()) throw IOException("Could not locate baze binary")
+      if (it.isEmpty()) throw IOException("Could not locate $this binary")
     }
 
 Main().main(args)
