@@ -30,7 +30,7 @@ Steps:
 
   3. Deploy the artifacts
       1. ```
-          tools/deploy.kts \
+          scripts/deploy.main.kts \
              --key <yourgpgkey> \
              --username <yourusername> \
              --password <yourpassword> \
@@ -59,7 +59,7 @@ Steps:
 
   4. Finish the release
       1. `git push --tags` # push the release tag
-      2. On the [releases page](https://github.com/square/maven-archeologist/releases) find the tag
+      2. On the [releases page](https://github.com/geekinasuit/maven-archeologist/releases) find the tag
          and edit it. 
           - For minor releases, just list the incremental change log since the last relevant release
             and link to the readme.
@@ -72,11 +72,11 @@ Steps:
 
 Problems and Solutions:
   * I get a bad tty reported when gpg asks for my passphrase.
-      - prefix your `tools/deploy.kts` command with `GPG_TTY=$(tty) ` and then the passphrase
+      - prefix your `scripts/deploy.main.kts` command with `GPG_TTY=$(tty) ` and then the passphrase
         screen should work normally. 
           - Note: the tty stuff works around a bug in gnupg being run deep in a toolchain
       - Other solutions are recommended here: https://stackoverflow.com/questions/14114528/avoid-gpg-signing-prompt-when-using-maven-release-plugin
-  * `tools/deploy.kts` fails because of missing pom file or other files.
+  * `scripts/deploy.main.kts` fails because of missing pom file or other files.
       - Make sure you run `bazel build //...` so all the files are built.
 
 

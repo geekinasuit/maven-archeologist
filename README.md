@@ -11,8 +11,8 @@ the "effective project model", validating hashes, etc.
 
 [maven-badge]: https://maven-badges.herokuapp.com/maven-central/com.squareup.tools.build/maven-archeologist/badge.svg?style=plastic
 [maven-search]: https://search.maven.org/artifact/com.squareup.tools.build/maven-archeologist
-[workflow-ci]: https://github.com/square/maven-archeologist/workflows/CI/badge.svg
-[workflow-ci-link]: https://github.com/square/maven-archeologist/actions?query=workflow%3ACI
+[workflow-ci]: https://github.com/geekinasuit/maven-archeologist/workflows/CI/badge.svg
+[workflow-ci-link]: https://github.com/geekinasuit/maven-archeologist/actions?query=workflow%3ACI
 
 ## Contents
 
