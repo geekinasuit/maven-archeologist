@@ -18,15 +18,15 @@ LIBRARY_VERSION = "HEAD-SNAPSHOT"  # Don't refactor this without altering script
 LIBRARY_METADATA = metadata(
     name = "Maven Archeologist",
     description = "A thin API for resolving and downloading Maven artifacts and metadata",
-    group_id = "com.squareup.tools.build",
+    group_id = "com.geekinasuit",
     artifact_id = "maven-archeologist",
     # library version - change in release branches.
     # This should always be "HEAD-SNAPSHOT" at main HEAD
     version = LIBRARY_VERSION,
     target = "//src/main/java/com/squareup/tools/maven/resolution",
     license = "Apache-2.0",  # SPDX token for Apache 2.0
-    github_slug = "square/maven-archeologist",
-    developers = [developer("cgruber", "Christian Gruber", "gruber@squareup.com")],
+    github_slug = "geekinasuit/maven-archeologist",
+    developers = [developer("cgruber", "Christian Gruber", "christian@geekinasuit.com")],
 )
 
 # What language compliance levels are we configuring
