@@ -195,6 +195,67 @@ class EndpointUrlTest {
     }
 }
 
+class ParseUploadResponseTest {
+    @Test fun `a valid 201 response is the deployment id, trimmed`() {
+        val r = DeployCommand.parseUploadResponse("  28570f16-da32-4c14-bd2e-c1acc0782365\n", 201)
+        assertThat(r.deploymentId).isEqualTo("28570f16-da32-4c14-bd2e-c1acc0782365")
+        assertThat(r.error).isNull()
+    }
+
+    @Test fun `a non-201 status is a failure even with a body`() {
+        val r = DeployCommand.parseUploadResponse("28570f16-da32-4c14-bd2e-c1acc0782365", 401)
+        assertThat(r.deploymentId).isNull()
+        assertThat(r.error).contains("401")
+    }
+
+    @Test fun `an empty 201 body is a failure`() {
+        val r = DeployCommand.parseUploadResponse("   ", 201)
+        assertThat(r.deploymentId).isNull()
+        assertThat(r.error).isNotNull()
+    }
+
+    // A proxy/auth error page returned with a 200/201 must not be trusted as a deployment id, or
+    // every subsequent status poll would silently 404 against garbage.
+    @Test fun `an html error page behind a 201 is rejected`() {
+        val r = DeployCommand.parseUploadResponse("<html><body>502 Bad Gateway</body></html>", 201)
+        assertThat(r.deploymentId).isNull()
+        assertThat(r.error).isNotNull()
+    }
+
+    @Test fun `a multi-line body is rejected`() {
+        val r = DeployCommand.parseUploadResponse("abc\ndef", 201)
+        assertThat(r.deploymentId).isNull()
+    }
+
+    @Test fun `an implausibly long body is rejected`() {
+        val r = DeployCommand.parseUploadResponse("x".repeat(500), 201)
+        assertThat(r.deploymentId).isNull()
+    }
+}
+
+class MultipartFramingTest {
+    @Test fun `preamble carries the boundary, field name, and filename`() {
+        val (preamble, _) = DeployCommand.multipartBundleFraming("BOUND123", "bundle.zip")
+        val text = String(preamble, Charsets.UTF_8)
+        assertThat(text).isEqualTo(
+            "--BOUND123\r\n" +
+                "Content-Disposition: form-data; name=\"bundle\"; filename=\"bundle.zip\"\r\n" +
+                "Content-Type: application/octet-stream\r\n" +
+                "\r\n"
+        )
+    }
+
+    @Test fun `epilogue closes the boundary`() {
+        val (_, epilogue) = DeployCommand.multipartBundleFraming("BOUND123", "bundle.zip")
+        assertThat(String(epilogue, Charsets.UTF_8)).isEqualTo("\r\n--BOUND123--\r\n")
+    }
+
+    @Test fun `content type header echoes the boundary`() {
+        assertThat(DeployCommand.multipartContentType("BOUND123"))
+            .isEqualTo("multipart/form-data; boundary=BOUND123")
+    }
+}
+
 class BundleLayoutTest {
     private val entries = DeployCommand.bundleEntries("com.example.foo", "widget", "2.3.4")
 
@@ -372,6 +433,20 @@ class ExtractStringVariableTest {
     }
 }
 
+class ExtractKwargStringTest {
+    @Test fun `reads an indented kwarg with a trailing comma`() {
+        val text = "metadata(\n    group_id = \"com.geekinasuit\",\n    artifact_id = \"maven-archeologist\",\n)"
+        assertThat(DeployCommand.extractKwargString(text, "group_id")).isEqualTo("com.geekinasuit")
+        assertThat(DeployCommand.extractKwargString(text, "artifact_id")).isEqualTo("maven-archeologist")
+    }
+
+    // A key that is a prefix of another (group_id / group_id_extra) must not cross-match.
+    @Test fun `does not match a longer key sharing the same prefix`() {
+        val text = "    group_id_extra = \"wrong\",\n    group_id = \"right\",\n"
+        assertThat(DeployCommand.extractKwargString(text, "group_id")).isEqualTo("right")
+    }
+}
+
 class FirstLineEndingWithTest {
     // Bazel indents artifact lines (leading whitespace) but does not trail them; the function
     // matches endsWith on the raw line, then trims the leading indent off the result.
@@ -398,10 +473,13 @@ runTests(
     SelectTargetTest::class.java,
     BearerHeaderTest::class.java,
     EndpointUrlTest::class.java,
+    ParseUploadResponseTest::class.java,
+    MultipartFramingTest::class.java,
     BundleLayoutTest::class.java,
     StatusParseTest::class.java,
     PollDispositionTest::class.java,
     DigestTest::class.java,
     ExtractStringVariableTest::class.java,
+    ExtractKwargStringTest::class.java,
     FirstLineEndingWithTest::class.java,
 )
