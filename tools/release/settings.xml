@@ -1,14 +1,21 @@
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd">
+  <!--
+    Auth for the mvn-based SNAPSHOT deploy path. This is the only live server entry: releases will
+    not go through mvn — the release path uploads a bundle to the Central Portal Publisher API and
+    builds its own Bearer header from CI_DEPLOY_USERNAME/CI_DEPLOY_PASSWORD, so it needs no server
+    entry here. (That upload is stubbed in this change; it lands in the follow-up PR. The snapshot
+    entry below is the one currently exercised.) The legacy OSSRH staging entry
+    (sonatype-nexus-staging) was removed with the OSSRH endpoints it authenticated
+    (EOL 2025-06-30); see ARCH-006.
+
+    The <id> must match the -DrepositoryId that scripts/lib/DeployCommand.kts emits for the
+    snapshot target (DeployCommand.Target.MvnRepo.SonatypeSnapshots.id).
+  -->
   <servers>
     <server>
-      <id>sonatype-nexus-snapshots</id>
-      <username>${env.CI_DEPLOY_USERNAME}</username>
-      <password>${env.CI_DEPLOY_PASSWORD}</password>
-    </server>
-    <server>
-      <id>sonatype-nexus-staging</id>
+      <id>central-snapshots</id>
       <username>${env.CI_DEPLOY_USERNAME}</username>
       <password>${env.CI_DEPLOY_PASSWORD}</password>
     </server>

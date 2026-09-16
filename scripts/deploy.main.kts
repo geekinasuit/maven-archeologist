@@ -19,17 +19,23 @@
 
 /*
  * Ported from kscript to the kotlin `*.main.kts` scripting form and relocated to scripts/ (ARCH-006).
- * The pure decision + command-assembly logic lives in scripts/lib/DeployCommand.kts and is unit-tested
- * by scripts/deploy.test.main.kts. This file keeps only the process orchestration (bazel build, mvn).
+ * The pure decision + assembly logic lives in scripts/lib/DeployCommand.kts and is unit-tested by
+ * scripts/deploy.test.main.kts. This file keeps only the process orchestration (bazel build, mvn).
  *
  * Run from the workspace root:  ./scripts/deploy.main.kts [--key <gpgkey>] [-v]
  * (or: kotlin scripts/deploy.main.kts ...). Requires `kotlin`, `mvn`, and a local `bazel`/`bazelisk`
  * on PATH.
  *
- * KNOWN LIMITATIONS carried forward from the original (the "better tools later" work under ARCH-006):
- *   - Sonatype OSS (oss.sonatype.org / OSSRH) is being sunset in favour of the Central Portal. The
- *     Repo URLs in DeployCommand still point at OSSRH, so a real release needs the endpoint + auth
- *     flow updated before it will publish to Maven Central.
+ * PUBLISH TARGETS (ARCH-006 Central Portal migration):
+ *   - Snapshots (CI on main) and the local fake sink deploy with `mvn deploy-file`. The snapshot URL
+ *     now points at the Central Portal snapshot repository; OSSRH (oss.sonatype.org) reached EOL
+ *     2025-06-30 and is gone (see DeployCommand.Target.MvnRepo).
+ *   - Releases (a release-* branch with a --key and a non-snapshot version) select the Central Portal
+ *     Publisher API bundle upload. The bundle assembly + HTTP upload is NOT wired up in this file yet
+ *     — it lands in the follow-up PR to ARCH-006; a release invocation here fails loudly rather than
+ *     pretending to publish.
+ *
+ * KNOWN LIMITATIONS carried forward:
  *   - CI detection keys off the Travis envvars (TRAVIS / TRAVIS_BRANCH); CI is GitHub Actions now, so
  *     the `--travis` snapshot path is effectively dead until rewired.
  *   - clikt is pinned at 2.6.0 (the original's version); newer geekinasuit scripts use clikt 4.x.
@@ -39,10 +45,11 @@
  *     missing `+`); it is now always present when --key is supplied (see DeployCommand.buildMvnCommand).
  *   - A failed/timed-out `mvn` publish used to exit 0; it now logs to stderr and exits non-zero.
  *   - `branch` is trimmed before comparison, so a trailing newline from `git branch --show-current`
- *     no longer defeats the `== "main"` check (see DeployCommand.selectRepo).
+ *     no longer defeats the `== "main"` check (see DeployCommand.selectTarget).
  */
 @file:Repository("https://repo1.maven.org/maven2")
 @file:DependsOn("com.github.ajalt:clikt:2.6.0")
+@file:DependsOn("com.squareup.moshi:moshi:1.15.1")
 @file:Import("lib/DeployCommand.kts")
 
 import com.github.ajalt.clikt.core.CliktCommand
@@ -90,19 +97,35 @@ class Main : CliktCommand() {
       System.err.println("Must run deployment script from the workspace root.")
       exitProcess(1)
     }
-    val repo = when (val decision =
-        DeployCommand.selectRepo(
+    val target = when (val decision =
+        DeployCommand.selectTarget(
             ci = travis,
             branch = branch,
             hasKey = key != null,
             snapshotVersion = snapshotVersion,
             version = version,
         )) {
-      is DeployCommand.RepoDecision.Deploy -> decision.repo
-      is DeployCommand.RepoDecision.Abort -> throw PrintMessage(decision.message)
-      is DeployCommand.RepoDecision.Usage -> throw UsageError(decision.message)
+      is DeployCommand.TargetDecision.Deploy -> decision.target
+      is DeployCommand.TargetDecision.Abort -> throw PrintMessage(decision.message)
+      is DeployCommand.TargetDecision.Usage -> throw UsageError(decision.message)
     }
 
+    when (target) {
+      is DeployCommand.Target.MvnRepo -> deployViaMvn(target)
+      is DeployCommand.Target.CentralPortalRelease -> {
+        // The bundle assembly + Publisher API upload lands in the follow-up PR to ARCH-006. Fail
+        // loudly (non-zero) rather than exit 0 as if a release had been published.
+        System.err.println(
+            "Release upload to the Central Portal is not yet implemented (follow-up PR to ARCH-006). " +
+                "Selected publishingType=${target.publishingType}; nothing was uploaded."
+        )
+        exitProcess(1)
+      }
+    }
+  }
+
+  /** Deploy to a plain Maven repository (snapshots / local fake) with `mvn deploy-file`. */
+  private fun deployViaMvn(repo: DeployCommand.Target.MvnRepo) {
     val mvn_cmd = DeployCommand.buildMvnCommand(
         repo = repo,
         artifactFile = artifact_file,
@@ -123,7 +146,7 @@ class Main : CliktCommand() {
         .redirectError(INHERIT)
         .apply {
           with(environment()) {
-            if (repo != DeployCommand.Repo.FakeLocalRepo) {
+            if (repo != DeployCommand.Target.MvnRepo.FakeLocalRepo) {
               if (username != null && password != null) {
                 putIfAbsent("CI_DEPLOY_USERNAME", username)
                 putIfAbsent("CI_DEPLOY_PASSWORD", password)
