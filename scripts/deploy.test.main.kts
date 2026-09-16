@@ -5,6 +5,7 @@
 @file:DependsOn("org.junit.jupiter:junit-jupiter-engine:5.11.0")
 @file:DependsOn("org.junit.platform:junit-platform-launcher:1.11.0")
 @file:DependsOn("com.google.truth:truth:1.4.4")
+@file:DependsOn("com.squareup.moshi:moshi:1.15.1")
 @file:Import("lib/TestRunner.kts")
 @file:Import("lib/DeployCommand.kts")
 
@@ -23,7 +24,7 @@ class MvnGoalTest {
 
 class BuildMvnCommandTest {
     private fun cmd(
-        repo: DeployCommand.Repo = DeployCommand.Repo.FakeLocalRepo,
+        repo: DeployCommand.Target.MvnRepo = DeployCommand.Target.MvnRepo.FakeLocalRepo,
         key: String? = null,
         verbose: Boolean = false,
         snapshotVersion: Boolean = true,
@@ -52,18 +53,18 @@ class BuildMvnCommandTest {
 
     // Regression guard for the original kscript bug: -Dgpg.keyname was computed but never appended.
     @Test fun `a supplied key appends -Dgpg-keyname and switches the goal`() {
-        val c = cmd(repo = DeployCommand.Repo.SonatypeStaging, key = "ABC123", snapshotVersion = false)
+        val c = cmd(repo = DeployCommand.Target.MvnRepo.SonatypeSnapshots, key = "ABC123", snapshotVersion = false)
         assertThat(c).contains("-Dgpg.keyname=ABC123")
         assertThat(c[1]).isEqualTo("gpg:sign-and-deploy-file")
     }
 
     @Test fun `the fake local repo omits the global settings flag`() {
-        val c = cmd(repo = DeployCommand.Repo.FakeLocalRepo)
+        val c = cmd(repo = DeployCommand.Target.MvnRepo.FakeLocalRepo)
         assertThat(c).doesNotContain("-gs")
     }
 
     @Test fun `a real repo passes -gs and the settings path in order`() {
-        val c = cmd(repo = DeployCommand.Repo.SonatypeSnapshots)
+        val c = cmd(repo = DeployCommand.Target.MvnRepo.SonatypeSnapshots)
         assertThat(c).containsAtLeast("-gs", "tools/release/settings.xml").inOrder()
     }
 
@@ -73,7 +74,7 @@ class BuildMvnCommandTest {
     }
 
     @Test fun `a release version includes the javadoc flag`() {
-        val c = cmd(repo = DeployCommand.Repo.SonatypeStaging, key = "K", snapshotVersion = false)
+        val c = cmd(repo = DeployCommand.Target.MvnRepo.SonatypeSnapshots, key = "K", snapshotVersion = false)
         assertThat(c).contains("-Djavadoc=tools/release/placeholder-javadoc.jar")
     }
 
@@ -83,47 +84,274 @@ class BuildMvnCommandTest {
     }
 
     @Test fun `repository id and url come from the target repo`() {
-        val c = cmd(repo = DeployCommand.Repo.FakeLocalRepo)
+        val c = cmd(repo = DeployCommand.Target.MvnRepo.FakeLocalRepo)
         assertThat(c).contains("-DrepositoryId=local-fake")
         assertThat(c).contains("-Durl=file:///tmp/fakerepo")
     }
+
+    // The snapshot endpoint moved from OSSRH (oss.sonatype.org, EOL 2025-06-30) to the Central
+    // Portal snapshot repository; guard both the id (must match settings.xml) and the new URL.
+    @Test fun `the snapshot repo targets the central portal snapshot url`() {
+        val c = cmd(repo = DeployCommand.Target.MvnRepo.SonatypeSnapshots)
+        assertThat(c).contains("-DrepositoryId=central-snapshots")
+        assertThat(c).contains("-Durl=https://central.sonatype.com/repository/maven-snapshots/")
+    }
 }
 
-class SelectRepoTest {
+class SelectTargetTest {
     @Test fun `ci on main deploys to snapshots`() {
-        val d = DeployCommand.selectRepo(ci = true, branch = "main", hasKey = false, snapshotVersion = true, version = "1-SNAPSHOT")
-        assertThat(d).isEqualTo(DeployCommand.RepoDecision.Deploy(DeployCommand.Repo.SonatypeSnapshots))
+        val d = DeployCommand.selectTarget(ci = true, branch = "main", hasKey = false, snapshotVersion = true, version = "1-SNAPSHOT")
+        assertThat(d).isEqualTo(DeployCommand.TargetDecision.Deploy(DeployCommand.Target.MvnRepo.SonatypeSnapshots))
     }
 
     // Regression guard for the untrimmed-branch quirk: git branch --show-current yields "main\n".
     @Test fun `ci on main with a trailing newline still deploys to snapshots`() {
-        val d = DeployCommand.selectRepo(ci = true, branch = "main\n", hasKey = false, snapshotVersion = true, version = "1-SNAPSHOT")
-        assertThat(d).isEqualTo(DeployCommand.RepoDecision.Deploy(DeployCommand.Repo.SonatypeSnapshots))
+        val d = DeployCommand.selectTarget(ci = true, branch = "main\n", hasKey = false, snapshotVersion = true, version = "1-SNAPSHOT")
+        assertThat(d).isEqualTo(DeployCommand.TargetDecision.Deploy(DeployCommand.Target.MvnRepo.SonatypeSnapshots))
     }
 
     @Test fun `ci off main aborts`() {
-        val d = DeployCommand.selectRepo(ci = true, branch = "feature", hasKey = false, snapshotVersion = true, version = "1-SNAPSHOT")
-        assertThat(d).isInstanceOf(DeployCommand.RepoDecision.Abort::class.java)
+        val d = DeployCommand.selectTarget(ci = true, branch = "feature", hasKey = false, snapshotVersion = true, version = "1-SNAPSHOT")
+        assertThat(d).isInstanceOf(DeployCommand.TargetDecision.Abort::class.java)
     }
 
     @Test fun `a release branch without a key is a usage error`() {
-        val d = DeployCommand.selectRepo(ci = false, branch = "release-1.0", hasKey = false, snapshotVersion = false, version = "1.0")
-        assertThat(d).isInstanceOf(DeployCommand.RepoDecision.Usage::class.java)
+        val d = DeployCommand.selectTarget(ci = false, branch = "release-1.0", hasKey = false, snapshotVersion = false, version = "1.0")
+        assertThat(d).isInstanceOf(DeployCommand.TargetDecision.Usage::class.java)
     }
 
     @Test fun `a release branch with a snapshot version is a usage error`() {
-        val d = DeployCommand.selectRepo(ci = false, branch = "release-1.0", hasKey = true, snapshotVersion = true, version = "1.0-SNAPSHOT")
-        assertThat(d).isInstanceOf(DeployCommand.RepoDecision.Usage::class.java)
+        val d = DeployCommand.selectTarget(ci = false, branch = "release-1.0", hasKey = true, snapshotVersion = true, version = "1.0-SNAPSHOT")
+        assertThat(d).isInstanceOf(DeployCommand.TargetDecision.Usage::class.java)
     }
 
-    @Test fun `a release branch with a key and a real version deploys to staging`() {
-        val d = DeployCommand.selectRepo(ci = false, branch = "release-1.0", hasKey = true, snapshotVersion = false, version = "1.0")
-        assertThat(d).isEqualTo(DeployCommand.RepoDecision.Deploy(DeployCommand.Repo.SonatypeStaging))
+    // The release branch now selects the Central Portal Publisher API, not an OSSRH staging repo.
+    @Test fun `a release branch with a key and a real version selects a central portal release`() {
+        val d = DeployCommand.selectTarget(ci = false, branch = "release-1.0", hasKey = true, snapshotVersion = false, version = "1.0")
+        assertThat(d).isEqualTo(
+            DeployCommand.TargetDecision.Deploy(
+                DeployCommand.Target.CentralPortalRelease(DeployCommand.PublishingType.USER_MANAGED)
+            )
+        )
+    }
+
+    // The default publishing type is USER_MANAGED; an explicit choice flows through to the target.
+    @Test fun `the release publishing type flows through to the target`() {
+        val d = DeployCommand.selectTarget(
+            ci = false, branch = "release-1.0", hasKey = true, snapshotVersion = false, version = "1.0",
+            publishingType = DeployCommand.PublishingType.AUTOMATIC,
+        )
+        assertThat(d).isEqualTo(
+            DeployCommand.TargetDecision.Deploy(
+                DeployCommand.Target.CentralPortalRelease(DeployCommand.PublishingType.AUTOMATIC)
+            )
+        )
     }
 
     @Test fun `any other branch deploys to the fake local repo`() {
-        val d = DeployCommand.selectRepo(ci = false, branch = "wip", hasKey = false, snapshotVersion = true, version = "1-SNAPSHOT")
-        assertThat(d).isEqualTo(DeployCommand.RepoDecision.Deploy(DeployCommand.Repo.FakeLocalRepo))
+        val d = DeployCommand.selectTarget(ci = false, branch = "wip", hasKey = false, snapshotVersion = true, version = "1-SNAPSHOT")
+        assertThat(d).isEqualTo(DeployCommand.TargetDecision.Deploy(DeployCommand.Target.MvnRepo.FakeLocalRepo))
+    }
+
+    // CI is checked before the release-branch rule, so a CI build that happens to be on a release-*
+    // branch aborts rather than selecting an irreversible Central Portal publish. Guards that ordering.
+    @Test fun `ci on a release branch aborts rather than releasing`() {
+        val d = DeployCommand.selectTarget(ci = true, branch = "release-1.0", hasKey = true, snapshotVersion = false, version = "1.0")
+        assertThat(d).isInstanceOf(DeployCommand.TargetDecision.Abort::class.java)
+    }
+}
+
+class BearerHeaderTest {
+    // base64("u:p") == "dTpw"; the header is the token pair, colon-joined, base64'd, behind "Bearer ".
+    @Test fun `builds a bearer header from the token pair`() {
+        assertThat(DeployCommand.bearerHeader("u", "p")).isEqualTo("Bearer dTpw")
+    }
+
+    @Test fun `different credentials produce different headers`() {
+        assertThat(DeployCommand.bearerHeader("a", "b"))
+            .isNotEqualTo(DeployCommand.bearerHeader("a", "c"))
+    }
+}
+
+class EndpointUrlTest {
+    @Test fun `upload url carries the publishing type`() {
+        assertThat(DeployCommand.uploadUrl(DeployCommand.PublishingType.USER_MANAGED))
+            .isEqualTo("https://central.sonatype.com/api/v1/publisher/upload?publishingType=USER_MANAGED")
+    }
+
+    @Test fun `upload url adds an optional deployment name`() {
+        assertThat(DeployCommand.uploadUrl(DeployCommand.PublishingType.AUTOMATIC, name = "central-bundle.zip"))
+            .isEqualTo("https://central.sonatype.com/api/v1/publisher/upload?publishingType=AUTOMATIC&name=central-bundle.zip")
+    }
+
+    @Test fun `status url passes the deployment id as a query parameter`() {
+        assertThat(DeployCommand.statusUrl("28570f16-da32-4c14-bd2e-c1acc0782365"))
+            .isEqualTo("https://central.sonatype.com/api/v1/publisher/status?id=28570f16-da32-4c14-bd2e-c1acc0782365")
+    }
+
+    @Test fun `deployment url puts the id in the path`() {
+        assertThat(DeployCommand.deploymentUrl("28570f16-da32-4c14-bd2e-c1acc0782365"))
+            .isEqualTo("https://central.sonatype.com/api/v1/publisher/deployment/28570f16-da32-4c14-bd2e-c1acc0782365")
+    }
+}
+
+class BundleLayoutTest {
+    private val entries = DeployCommand.bundleEntries("com.example.foo", "widget", "2.3.4")
+
+    @Test fun `group id dots become path slashes`() {
+        assertThat(DeployCommand.groupPath("com.example.foo")).isEqualTo("com/example/foo")
+    }
+
+    @Test fun `maven file name includes the classifier only when present`() {
+        assertThat(DeployCommand.mavenFileName("widget", "2.3.4", null, "jar")).isEqualTo("widget-2.3.4.jar")
+        assertThat(DeployCommand.mavenFileName("widget", "2.3.4", "sources", "jar"))
+            .isEqualTo("widget-2.3.4-sources.jar")
+    }
+
+    @Test fun `there are exactly four primary artifacts`() {
+        assertThat(entries).hasSize(4)
+    }
+
+    @Test fun `the primaries are pom, jar, sources, and javadoc in upload order`() {
+        assertThat(entries.map { it.fileName }).containsExactly(
+            "widget-2.3.4.pom",
+            "widget-2.3.4.jar",
+            "widget-2.3.4-sources.jar",
+            "widget-2.3.4-javadoc.jar",
+        ).inOrder()
+    }
+
+    @Test fun `each primary sits in the maven-layout directory`() {
+        assertThat(entries.first().bundlePath).isEqualTo("com/example/foo/widget/2.3.4/widget-2.3.4.pom")
+    }
+
+    // Central requires exactly .asc + .md5 + .sha1 per primary; the requirement does NOT recurse
+    // (checksums aren't signed, signatures aren't checksummed) and sha256/sha512 are skipped.
+    @Test fun `each primary has exactly asc, md5, and sha1 siblings`() {
+        for (e in entries) {
+            assertThat(e.siblings).containsExactly(
+                "${e.bundlePath}.asc",
+                "${e.bundlePath}.md5",
+                "${e.bundlePath}.sha1",
+            ).inOrder()
+        }
+    }
+
+    @Test fun `the bundle is sixteen files with no optional checksums`() {
+        val allFiles = entries.flatMap { listOf(it.bundlePath) + it.siblings }
+        assertThat(allFiles).hasSize(16)
+        assertThat(allFiles.none { it.endsWith(".sha256") || it.endsWith(".sha512") }).isTrue()
+    }
+}
+
+class StatusParseTest {
+    @Test fun `parses a validated state`() {
+        val r = DeployCommand.parseStatusResponse("""{"deploymentId":"x","deploymentState":"VALIDATED"}""")
+        assertThat(r.state).isEqualTo(DeployCommand.DeploymentState.VALIDATED)
+        assertThat(r.rawState).isEqualTo("VALIDATED")
+        assertThat(r.errors).isNull()
+    }
+
+    @Test fun `parses a published state`() {
+        val r = DeployCommand.parseStatusResponse("""{"deploymentState":"PUBLISHED","purls":["pkg:maven/x@1"]}""")
+        assertThat(r.state).isEqualTo(DeployCommand.DeploymentState.PUBLISHED)
+    }
+
+    @Test fun `surfaces the errors field on failure`() {
+        val r = DeployCommand.parseStatusResponse(
+            """{"deploymentState":"FAILED","errors":{"widget-2.3.4.pom":["missing signature"]}}"""
+        )
+        assertThat(r.state).isEqualTo(DeployCommand.DeploymentState.FAILED)
+        assertThat(r.errors).contains("missing signature")
+    }
+
+    // An unrecognized state string is preserved in rawState (surfaced, not swallowed); state is null.
+    @Test fun `preserves an unknown state string`() {
+        val r = DeployCommand.parseStatusResponse("""{"deploymentState":"WARP_SPEED"}""")
+        assertThat(r.state).isNull()
+        assertThat(r.rawState).isEqualTo("WARP_SPEED")
+    }
+
+    @Test fun `a missing state is null`() {
+        val r = DeployCommand.parseStatusResponse("""{"deploymentId":"x"}""")
+        assertThat(r.state).isNull()
+        assertThat(r.rawState).isNull()
+    }
+
+    // A poller must not die on a malformed/partial body; parsing yields an empty result, not a throw.
+    @Test fun `a malformed body parses to an empty result without throwing`() {
+        val r = DeployCommand.parseStatusResponse("this is not json")
+        assertThat(r.state).isNull()
+        assertThat(r.rawState).isNull()
+        assertThat(r.errors).isNull()
+    }
+}
+
+class PollDispositionTest {
+    private val userManaged = DeployCommand.PublishingType.USER_MANAGED
+    private val automatic = DeployCommand.PublishingType.AUTOMATIC
+
+    // The core guard: USER_MANAGED succeeds at VALIDATED and must NOT wait for PUBLISHED (which
+    // never arrives without a manual publish), while AUTOMATIC's success is PUBLISHED.
+    @Test fun `terminal success state differs by publishing type`() {
+        assertThat(DeployCommand.terminalSuccessState(userManaged)).isEqualTo(DeployCommand.DeploymentState.VALIDATED)
+        assertThat(DeployCommand.terminalSuccessState(automatic)).isEqualTo(DeployCommand.DeploymentState.PUBLISHED)
+    }
+
+    @Test fun `user-managed is done at validated but automatic keeps waiting`() {
+        assertThat(DeployCommand.classifyPoll(DeployCommand.DeploymentState.VALIDATED, userManaged))
+            .isEqualTo(DeployCommand.PollDisposition.SUCCESS)
+        assertThat(DeployCommand.classifyPoll(DeployCommand.DeploymentState.VALIDATED, automatic))
+            .isEqualTo(DeployCommand.PollDisposition.WAIT)
+    }
+
+    @Test fun `automatic succeeds at published`() {
+        assertThat(DeployCommand.classifyPoll(DeployCommand.DeploymentState.PUBLISHED, automatic))
+            .isEqualTo(DeployCommand.PollDisposition.SUCCESS)
+    }
+
+    // Past validation already: for user-managed the tool's job (upload + validate) is done, so
+    // PUBLISHING counts as success; for automatic it is still in flight toward PUBLISHED.
+    @Test fun `publishing is success for user-managed but keeps waiting for automatic`() {
+        assertThat(DeployCommand.classifyPoll(DeployCommand.DeploymentState.PUBLISHING, userManaged))
+            .isEqualTo(DeployCommand.PollDisposition.SUCCESS)
+        assertThat(DeployCommand.classifyPoll(DeployCommand.DeploymentState.PUBLISHING, automatic))
+            .isEqualTo(DeployCommand.PollDisposition.WAIT)
+    }
+
+    @Test fun `failed is failure for either type`() {
+        assertThat(DeployCommand.classifyPoll(DeployCommand.DeploymentState.FAILED, userManaged))
+            .isEqualTo(DeployCommand.PollDisposition.FAILED)
+        assertThat(DeployCommand.classifyPoll(DeployCommand.DeploymentState.FAILED, automatic))
+            .isEqualTo(DeployCommand.PollDisposition.FAILED)
+    }
+
+    @Test fun `pending and validating keep waiting`() {
+        assertThat(DeployCommand.classifyPoll(DeployCommand.DeploymentState.PENDING, automatic))
+            .isEqualTo(DeployCommand.PollDisposition.WAIT)
+        assertThat(DeployCommand.classifyPoll(DeployCommand.DeploymentState.VALIDATING, userManaged))
+            .isEqualTo(DeployCommand.PollDisposition.WAIT)
+    }
+
+    // A null (unparseable) state keeps the poll alive; the caller's overall timeout bounds it.
+    @Test fun `a null state keeps waiting`() {
+        assertThat(DeployCommand.classifyPoll(null, userManaged)).isEqualTo(DeployCommand.PollDisposition.WAIT)
+    }
+}
+
+class DigestTest {
+    @Test fun `hex encodes low bytes without sign extension`() {
+        assertThat(DeployCommand.hex(byteArrayOf(0, 15, 16, 255.toByte()))).isEqualTo("000f10ff")
+    }
+
+    @Test fun `md5 matches known vectors`() {
+        assertThat(DeployCommand.md5Hex("".toByteArray())).isEqualTo("d41d8cd98f00b204e9800998ecf8427e")
+        assertThat(DeployCommand.md5Hex("abc".toByteArray())).isEqualTo("900150983cd24fb0d6963f7d28e17f72")
+    }
+
+    @Test fun `sha1 matches known vectors`() {
+        assertThat(DeployCommand.sha1Hex("".toByteArray())).isEqualTo("da39a3ee5e6b4b0d3255bfef95601890afd80709")
+        assertThat(DeployCommand.sha1Hex("abc".toByteArray())).isEqualTo("a9993e364706816aba3e25717850c26c9cd0d89d")
     }
 }
 
@@ -167,7 +395,13 @@ class FirstLineEndingWithTest {
 runTests(
     MvnGoalTest::class.java,
     BuildMvnCommandTest::class.java,
-    SelectRepoTest::class.java,
+    SelectTargetTest::class.java,
+    BearerHeaderTest::class.java,
+    EndpointUrlTest::class.java,
+    BundleLayoutTest::class.java,
+    StatusParseTest::class.java,
+    PollDispositionTest::class.java,
+    DigestTest::class.java,
     ExtractStringVariableTest::class.java,
     FirstLineEndingWithTest::class.java,
 )
