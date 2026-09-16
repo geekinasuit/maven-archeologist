@@ -334,6 +334,60 @@ object DeployCommand {
             DeploymentState.PUBLISHED -> PollDisposition.SUCCESS
         }
 
+    // ---- Central Portal Publisher API: upload response, multipart body -----------------------
+
+    /**
+     * The outcome of a bundle upload: the deployment id on success, or a human-readable reason
+     * on failure. The upload response body is `text/plain` (a bare id, not JSON) per the Publisher
+     * API docs — this validates it rather than trusting any 200/201 body as the id verbatim, since
+     * an HTTP error page (proxy timeout, auth failure rendered as HTML) would otherwise become the
+     * "deployment id" and every subsequent status poll would 404 against it silently.
+     */
+    data class UploadResult(val deploymentId: String?, val error: String?)
+
+    fun parseUploadResponse(body: String, statusCode: Int): UploadResult {
+        val trimmed = body.trim()
+        return when {
+            statusCode != 201 ->
+                UploadResult(null, "upload failed: HTTP $statusCode: ${trimmed.take(500)}")
+            trimmed.isEmpty() ->
+                UploadResult(null, "upload returned HTTP 201 with an empty body")
+            trimmed.contains('\n') || trimmed.contains('<') ->
+                UploadResult(null, "upload response doesn't look like a deployment id: ${trimmed.take(200)}")
+            trimmed.length > 200 ->
+                UploadResult(null, "upload response unexpectedly long for a deployment id (${trimmed.length} chars)")
+            else -> UploadResult(trimmed, null)
+        }
+    }
+
+    /**
+     * The `Content-Type` header value for a multipart upload with the given boundary.
+     */
+    fun multipartContentType(boundary: String): String = "multipart/form-data; boundary=$boundary"
+
+    /**
+     * The preamble and epilogue byte sequences that frame a single-file multipart/form-data body
+     * around field name "bundle" (the Publisher API's expected field). The caller assembles the
+     * full request body as `preamble + <zip file bytes> + epilogue` — via
+     * `HttpRequest.BodyPublishers.ofByteArrays(listOf(preamble, zipBytes, epilogue))`, never by
+     * concatenating the zip bytes into a String, which would corrupt binary content on any
+     * non-UTF8-safe byte sequence.
+     *
+     * Returned as a Pair, not a data class: a data class's generated `equals`/`hashCode` compare
+     * `ByteArray` fields by reference, not content, which would make an equality-based test
+     * silently pass/fail on the wrong basis. Compare the returned arrays with `contentEquals`.
+     */
+    fun multipartBundleFraming(boundary: String, zipFileName: String): Pair<ByteArray, ByteArray> {
+        val preamble = buildString {
+            append("--").append(boundary).append("\r\n")
+            append("Content-Disposition: form-data; name=\"bundle\"; filename=\"").append(zipFileName).append("\"\r\n")
+            append("Content-Type: application/octet-stream\r\n")
+            append("\r\n")
+        }.toByteArray(Charsets.UTF_8)
+        val epilogue = "\r\n--$boundary--\r\n".toByteArray(Charsets.UTF_8)
+        return preamble to epilogue
+    }
+
     // ---- Signing / checksum helpers ----------------------------------------------------------
 
     /** Lower-case hex encoding of a byte array. (Mask to 8 bits so a negative Byte isn't sign-extended.) */
@@ -357,6 +411,20 @@ object DeployCommand {
             .substringBefore("#") // ditch comments
             .substringAfter("=")
             .trim('"', ' ')
+
+    /**
+     * Extract an indented `key = "value",` keyword argument from a Starlark function call (e.g.
+     * `group_id`/`artifact_id` inside versions.bzl's `metadata(...)` call). Unlike
+     * [extractStringVariable] (a top-level `VAR = "value"` line), this tolerates leading
+     * indentation and a trailing comma.
+     */
+    fun extractKwargString(text: String, key: String): String =
+        text.lines()
+            .map { it.trim() }
+            .first { it.startsWith("$key ") || it.startsWith("$key=") }
+            .substringBefore("#")
+            .substringAfter("=")
+            .trim(' ', ',', '"')
 
     /**
      * From merged command output, the first trimmed line ending with `suffix` — used to pick a
